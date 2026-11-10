@@ -1,5 +1,5 @@
 // Transcrito de las fotos del menú impreso. Precios en MXN; p=[mediano 12oz, grande 16oz] o [precio único].
-// per: d=desayuno c=comida t=tarde n=noche · t: h=caliente f=frío a=cualquiera
+// per: d=desayuno c=comida t=tarde n=noche · t: h=caliente f=frío/frappé a=cualquiera
 export const TABS=[['cafe','Café caliente'],['frio','Frío y frappés'],['chai','Chai, tés y smoothies'],['comer','Para comer'],['bar','Bar y bebidas']];
 export const SECS=[
 ['espressos','cafe','Espressos','espresso','dctn','h'],['calientes','cafe','Especialidades calientes','latte','dctn','h','Mediano 12 oz · Grande 16 oz'],
@@ -128,5 +128,14 @@ cerveza|Miller High Life|Importada · 355 ml|44
 cerveza|Strongbow manzana dorada|330 ml|44
 cerveza|Strongbow fresa|330 ml|44`;
 const S=Object.fromEntries(SECS.map(s=>[s.id,s]));
-export const ITEMS=R.split('\n').map((l,id)=>{const[sec,n,d,a,b]=l.split('|');const s=S[sec];
+const BASE_ITEMS=R.split('\n').map((l,id)=>{const[sec,n,d,a,b]=l.split('|');const s=S[sec];
  return{id,sec,cat:s.cat,n,d,p:b?[+a,+b]:[+a],per:s.per,t:s.t}});
+export const ITEMS=BASE_ITEMS.flatMap(item=>{
+ if(item.sec!=='tes') return [item];
+ const description=item.d==='Caliente, frío o frappé' ? '' : item.d;
+ return [
+  {...item,n:`${item.n} · Caliente`,d:description,t:'h'},
+  {...item,n:`${item.n} · Frío`,d:description,t:'f'},
+  {...item,n:`${item.n} · Frappé`,d:description,t:'f'}
+ ];
+}).map((item,id)=>({...item,id}));

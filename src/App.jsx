@@ -74,13 +74,16 @@ export default function App() {
   const h = sim ? sim.h : h0, w = sim ? { temp: sim.temp, cond: sim.cond } : w0, p = periodOf(h);
   const [mode, setMode] = useState(null), [sound, setSound] = useState(false);
   const night = (mode ?? (h >= 18 || h < 7 ? 'night' : 'lounge')) === 'night';
-  const [sec, setSec] = useState('rec'), [sz, setSz] = useState({}), [cart, setCart] = useState({}), [sheet, setSheet] = useState(false), [done, setDone] = useState(null), [people, setPeople] = useState(2);
+  const [sec, setSec] = useState('rec'), [sz, setSz] = useState({}), [cart, setCart] = useState({}), [sheet, setSheet] = useState(false), [done, setDone] = useState(null);
+  const [highDemand, setHighDemand] = useState(false);
+  const [pendingAlcohol, setPendingAlcohol] = useState(null), [alcoholSeconds, setAlcoholSeconds] = useState(50), [alcoholNotice, setAlcoholNotice] = useState('');
 
   useEffect(() => { document.documentElement.dataset.theme = night ? 'night' : 'lounge'; }, [night]);
   useAmbient(sound, night);
 
-  const hot = w.temp != null && w.temp >= 29, cold = (w.temp != null && w.temp <= 18) || w.cond === 'rain' || w.cond === 'storm';
-  const score = i => (i.per.includes(p) ? 2 : 0) + (hot ? (i.t === 'f' ? 3 : i.t === 'a' ? 1 : 0) : cold ? (i.t === 'h' ? 3 : i.t === 'a' ? 1 : 0) : 1);
+  const rainy = w.cond === 'rain' || w.cond === 'storm';
+  const hot = w.temp != null && w.temp >= 29 && !rainy, cold = (w.temp != null && w.temp <= 25) || rainy;
+  const score = i => (i.per.includes(p) ? 2 : 0) + (hot ? (i.t === 'f' ? 4 : i.t === 'a' ? 1 : 0) : cold ? (i.t === 'h' ? 4 : i.t === 'a' ? 1 : 0) : 1);
   const best = i => (hot && i.t === 'f') || (cold && i.t === 'h');
   const rec = useMemo(() => {
     const c = {};
@@ -88,25 +91,70 @@ export default function App() {
       .filter(i => (c[i.sec] = (c[i.sec] || 0) + 1) <= 2).slice(0, 8);
   }, [p, hot, cold]);
 
-  const peopleLabel = people === 1 ? '1 persona' : `${people} personas`;
-  const groupedRec = useMemo(() => {
-    const picks = [...ITEMS].filter(i => i.per.includes(p) && !/Leche|Shot/.test(i.n)).sort((a, b) => score(b) - score(a) || a.id - b.id);
-    const offerCount = people <= 2 ? 2 : people <= 4 ? 3 : 4;
-    const drinkCount = people <= 2 ? 2 : people <= 4 ? 3 : 4;
-    const foodCount = people <= 2 ? 1 : people <= 4 ? 2 : 3;
+  const quickRec = useMemo(() => {
+    const limits = { espressos: 2, calientes: 1, croissants: 2, refrescos: 2, galletas: 1 };
+    const selected = [];
+    [...ITEMS]
+      .filter(i => i.per.includes(p) && Object.hasOwn(limits, i.sec))
+      .sort((a, b) => score(b) - score(a) || a.id - b.id)
+      .forEach(item => {
+        if (selected.filter(i => i.sec === item.sec).length < limits[item.sec]) selected.push(item);
+      });
+    return selected;
+  }, [p, hot, cold]);
 
-    return {
-      offers: picks.slice(0, offerCount),
-      drinks: picks.filter(i => ['cafe', 'frio', 'chai', 'bar'].includes(i.sec)).slice(0, drinkCount),
-      foods: picks.filter(i => i.sec === 'comer').slice(0, foodCount),
+  useEffect(() => {
+    if (!pendingAlcohol) return undefined;
+    const updateCountdown = () => {
+      const remaining = Math.max(0, Math.ceil((pendingAlcohol.deadline - Date.now()) / 1000));
+      setAlcoholSeconds(remaining);
+      if (remaining === 0) {
+        setCart(current => {
+          const next = { ...current };
+          delete next[pendingAlcohol.key];
+          return next;
+        });
+        setAlcoholNotice(`${pendingAlcohol.name} se eliminó del pedido porque no se mostró la INE a tiempo.`);
+        setPendingAlcohol(null);
+      }
     };
-  }, [p, hot, cold, people]);
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 250);
+    return () => clearInterval(timer);
+  }, [pendingAlcohol]);
+
+  useEffect(() => {
+    if (!alcoholNotice) return undefined;
+    const timer = setTimeout(() => setAlcoholNotice(''), 6000);
+    return () => clearTimeout(timer);
+  }, [alcoholNotice]);
 
   const cur = SECS.find(x => x.id === sec);
   const list = sec === 'rec' ? rec : ITEMS.filter(i => i.sec === sec).sort((a, b) => score(b) - score(a));
   const pr = k => { const [id, z] = k.split(':'), it = ITEMS[id]; return it.p[z] ?? it.p[0]; };
   const count = Object.values(cart).reduce((a, b) => a + b, 0), total = Object.entries(cart).reduce((t, [k, q]) => t + pr(k) * q, 0);
-  const add = (k, d = 1) => setCart(c => { const q = (c[k] || 0) + d, n = { ...c }; q > 0 ? n[k] = q : delete n[k]; return n; });
+  const add = (k, d = 1) => {
+    const item = ITEMS[Number(k.split(':')[0])];
+    if (d > 0 && item?.sec === 'cerveza') {
+      setCart(current => ({ ...current, [k]: (current[k] || 0) + d }));
+      setAlcoholNotice('');
+      setPendingAlcohol({ key: k, name: item.n, deadline: Date.now() + 50000 });
+      return;
+    }
+    setCart(current => { const q = (current[k] || 0) + d, next = { ...current }; q > 0 ? next[k] = q : delete next[k]; return next; });
+  };
+  const resolveAlcohol = valid => {
+    if (!pendingAlcohol) return;
+    if (!valid) {
+      setCart(current => {
+        const next = { ...current };
+        delete next[pendingAlcohol.key];
+        return next;
+      });
+      setAlcoholNotice(`${pendingAlcohol.name} se eliminó del pedido porque la INE no fue válida.`);
+    }
+    setPendingAlcohol(null);
+  };
 
   const order = (
     <>
@@ -149,6 +197,9 @@ export default function App() {
           {PRE.map(([l, t, c]) => <button key={l} onClick={() => setSim(s => ({ h: s ? s.h : h0, temp: t, cond: c }))} className={`rounded-full px-3 py-1.5 font-bold border border-ink/10 ${sim?.temp === t && sim?.cond === c ? 'bg-gold text-black' : 'text-muted'}`}>{l}</button>)}
           <label className="flex items-center gap-1">Temp <input type="range" min="5" max="42" value={w.temp ?? 25} onChange={e => setSim(s => ({ h: s ? s.h : h0, cond: s ? s.cond : w0.cond, temp: +e.target.value }))} className="accent-[#D93829]" />{w.temp ?? 25}°</label>
           <label className="flex items-center gap-1">Hora <input type="range" min="0" max="23" value={h} onChange={e => setSim(s => ({ temp: s ? s.temp : (w0.temp ?? 25), cond: s ? s.cond : w0.cond, h: +e.target.value }))} className="accent-[#D93829]" />{String(h).padStart(2, '0')}:00</label>
+          <span className="hidden sm:block h-6 border-l border-ink/15" />
+          <span className="font-bold text-muted">Demanda</span>
+          <button onClick={() => setHighDemand(value => !value)} aria-pressed={highDemand} className={`rounded-full px-3 py-1.5 font-bold border border-ink/10 ${highDemand ? 'bg-neon text-white' : 'text-muted'}`}>{highDemand ? 'Alta demanda' : 'Normal'}</button>
         </div>
       )}
 
@@ -185,52 +236,28 @@ export default function App() {
               {sec === 'rec' ? 'Recomendados para ti' : cur.title}
             </h1>
             <p className="text-xs text-muted mt-0.5">
-              {sec === 'rec' ? `Elegidos según la hora${w.temp != null ? ` y los ${w.temp}°C de ahora` : ''}.` : cur.sub || ''}
+              {sec === 'rec' ? `${w.temp != null ? `${w.temp}°C · ` : ''}${WX[w.cond]} · ${cold ? 'Sugerencias para clima frío: bebidas calientes y alimentos reconfortantes.' : hot ? 'Sugerencias para el calor: bebidas frías y refrescantes.' : 'Sugerencias equilibradas según la hora y el clima.'}` : cur.sub || ''}
             </p>
           </div>
 
-          {sec === 'rec' && (
-            <div className="mb-6 rounded-2xl border border-ink/10 bg-surface/60 p-4 shadow-sm">
-              <div className="flex flex-col gap-3 pb-3 border-b border-ink/10 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted font-bold">Pedido</p>
-                  <h2 className="menu-serif text-xl text-ink">Recomendación para {peopleLabel}</h2>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {[1, 2, 4, 6, 8].map(n => (
-                    <button key={n} onClick={() => setPeople(n)} aria-pressed={people === n} className={`rounded-full px-3 py-1.5 text-xs font-extrabold border ${people === n ? 'bg-neon text-white border-transparent' : 'bg-transparent text-muted border-ink/10'}`}>
-                      {n} {n === 1 ? 'persona' : 'pers.'}
+          {sec === 'rec' && highDemand && (
+            <section className="mb-6" aria-labelledby="quick-recommendations-title">
+              <div className="mb-3 border-b border-ink/10 pb-2">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-gold font-bold">Alta demanda</p>
+                <h2 id="quick-recommendations-title" className="menu-serif text-xl text-ink">Opciones rápidas para preparar o entregar</h2>
+                <p className="text-xs text-muted mt-1">Incluye cafés y croissants preparados al momento, además de productos listos para entregar.</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {quickRec.map(i => {
+                  const z = sz[i.id] || 0;
+                  return (
+                    <button key={i.id} onClick={() => add(`${i.id}:${z}`)} className="flex items-center justify-between gap-2 border-b border-dashed border-ink/15 px-2 py-2 text-left hover:bg-surface/40">
+                      <span className="text-sm font-bold">{i.n}</span><span className="menu-serif text-sm font-bold text-gold">${i.p[z]}</span>
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-
-             <div className="mt-4 grid gap-3 md:grid-cols-3">
-  {[{ title: 'Ofertas del día', items: groupedRec.offers }, { title: 'Bebidas', items: groupedRec.drinks }, { title: 'Alimentos', items: groupedRec.foods }].map(section => (
-    <div key={section.title} className="rounded-xl border border-ink/10 bg-surface/60 p-3">
-      <div className="mb-2 flex items-center justify-between border-b border-ink/10 pb-1.5">
-        <span className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-neon">{section.title}</span>
-        <span className="text-[10px] font-extrabold text-muted">{section.items.length}</span>
-      </div>
-      <div className="space-y-2">
-        {section.items.length ? section.items.map(i => {
-          const z = sz[i.id] || 0;
-          const k = `${i.id}:${z}`;
-          return (
-            <button key={`${section.title}-${i.id}`} onClick={() => add(k)} className="w-full text-left rounded-lg bg-bg/50 border border-ink/5 px-2.5 py-2 leading-tight transition hover:bg-bg">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-extrabold text-xs sm:text-sm text-ink">{i.n}</span>
-                <span className="menu-serif text-sm font-bold text-gold shrink-0">${i.p[z]}</span>
-              </div>
-              {i.d && <p className="mt-1 text-[11px] text-muted line-clamp-2 leading-snug">{i.d}</p>}
-            </button>
-          );
-        }) : <p className="text-[11px] text-muted py-2 text-center">Sin sugerencias disponibles en este horario.</p>}
-      </div>
-    </div>
-  ))}
-</div>
-            </div>
+            </section>
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-4">
@@ -302,6 +329,29 @@ export default function App() {
             <p className="text-muted mt-1">Simulación: tu pedido está en preparación.</p>
             <button onClick={() => setDone(null)} className="mt-5 rounded-xl bg-neon text-white font-extrabold px-8 py-3">Nueva orden</button>
           </div>
+        </div>
+      )}
+
+      {pendingAlcohol && (
+        <div className="fixed inset-0 z-[60] bg-black/75 flex items-center justify-center p-5" role="dialog" aria-modal="true" aria-labelledby="ine-reader-title">
+          <div className="w-full max-w-md rounded-3xl bg-surface p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full border-2 border-gold text-3xl" aria-hidden="true">▣</div>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted font-bold">Lector de cámara · Simulación</p>
+            <h2 id="ine-reader-title" className="menu-serif text-2xl mt-1">Verifica tu INE</h2>
+            <p className="text-sm text-muted mt-2">Coloca una identificación oficial frente al lector para confirmar la compra de <strong className="text-ink">{pendingAlcohol.name}</strong>.</p>
+            <p className="mt-4 text-sm font-bold">Tiempo restante: <span className="text-neon tabular-nums">{alcoholSeconds} s</span></p>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2">
+              <button onClick={() => resolveAlcohol(true)} className="rounded-xl bg-leaf px-4 py-3 text-sm font-extrabold text-white">INE válida</button>
+              <button onClick={() => resolveAlcohol(false)} className="rounded-xl bg-neon px-4 py-3 text-sm font-extrabold text-white">INE inválida</button>
+            </div>
+            <p className="text-[11px] text-muted mt-3">Si no se muestra en 50 segundos, la bebida se quitará del pedido.</p>
+          </div>
+        </div>
+      )}
+
+      {alcoholNotice && (
+        <div className="fixed bottom-5 left-1/2 z-[70] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-xl bg-surface px-4 py-3 text-center text-sm font-bold shadow-xl" role="status">
+          {alcoholNotice}
         </div>
       )}
     </div>
